@@ -149,6 +149,7 @@ repeat(forever) {
         logView.setBackgroundColor(Color.WHITE)
         logView.setPadding(dp(10), dp(10), dp(10), dp(10))
         logView.minLines = 5
+        logView.setTextIsSelectable(true)
         root.addView(logView)
         root.addView(btn("Очистить журнал") {
             Store.clearLog(this)
