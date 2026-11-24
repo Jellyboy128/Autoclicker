@@ -2,6 +2,9 @@ package com.example.autoclicker
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -17,6 +20,7 @@ import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -33,8 +37,12 @@ class ClickService : AccessibilityService(), Env {
 
     private var windowManager: WindowManager? = null
     private var panel: View? = null
+    private var picker: View? = null
+    private val picked = ArrayList<String>()
     private var worker: Thread? = null
     private var lastShotAt = 0L
+    @Volatile
+    private var shotIntervalMs = 350L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -48,6 +56,7 @@ class ClickService : AccessibilityService(), Env {
 
     override fun onUnbind(intent: Intent?): Boolean {
         stopScript()
+        stopPicker()
         hidePanel()
         instance = null
         return super.onUnbind(intent)
@@ -111,8 +120,10 @@ class ClickService : AccessibilityService(), Env {
         }
         root.addView(makeButton("Старт") { startScript() }, btnParams())
         root.addView(makeButton("Стоп") { stopScript() }, btnParams())
+        root.addView(makeButton("Пипетка") { startPicker() }, btnParams())
         root.addView(makeButton("✕") {
             stopScript()
+            stopPicker()
             hidePanel()
         }, btnParams())
 
@@ -161,6 +172,90 @@ class ClickService : AccessibilityService(), Env {
         panel = null
     }
 
+    // ---- пипетка ----
+
+    fun startPicker() {
+        if (picker != null) return
+        val wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        windowManager = wm
+        synchronized(picked) { picked.clear() }
+
+        val frame = FrameLayout(this)
+        frame.setOnTouchListener { _, e ->
+            if (e.action == MotionEvent.ACTION_UP) pickAt(e.rawX.toInt(), e.rawY.toInt())
+            true
+        }
+
+        val bg = GradientDrawable()
+        bg.setColor(Color.parseColor("#B3E5FC"))
+        bg.cornerRadius = dp(16).toFloat()
+
+        val bar = LinearLayout(this)
+        bar.orientation = LinearLayout.HORIZONTAL
+        bar.gravity = Gravity.CENTER_VERTICAL
+        bar.setPadding(dp(12), dp(6), dp(6), dp(6))
+        bar.background = bg
+        bar.isClickable = true
+
+        val hint = TextView(this)
+        hint.text = "Тапайте по точкам   "
+        hint.setTextColor(Color.parseColor("#01579B"))
+        bar.addView(hint)
+        bar.addView(makeButton("Готово") { stopPicker() })
+
+        val barLp = FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.CENTER_HORIZONTAL
+        )
+        barLp.topMargin = dp(48)
+        frame.addView(bar, barLp)
+
+        val lp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        )
+        wm.addView(frame, lp)
+        picker = frame
+    }
+
+    fun stopPicker() {
+        val p = picker ?: return
+        try {
+            windowManager?.removeView(p)
+        } catch (e: Exception) {
+        }
+        picker = null
+    }
+
+    private fun pickAt(x: Int, y: Int) {
+        Thread {
+            val color = try {
+                pixel(x, y)
+            } catch (e: Exception) {
+                "?"
+            }
+            val text: String
+            val line: String
+            synchronized(picked) {
+                line = "point(p${picked.size + 1}, $x, $y); // $color"
+                picked.add(line)
+                text = picked.joinToString("\n")
+            }
+            Store.addLog(this, line)
+            Handler(Looper.getMainLooper()).post {
+                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                cm.setPrimaryClip(ClipData.newPlainText("points", text))
+                Toast.makeText(this, "$x, $y  $color (скопировано)", Toast.LENGTH_SHORT).show()
+            }
+        }.start()
+    }
+
     // ---- запуск скрипта ----
 
     fun startScript() {
@@ -178,6 +273,7 @@ class ClickService : AccessibilityService(), Env {
             return
         }
         val loopAll = Store.loop(this)
+        shotIntervalMs = 350L
         val t = Thread {
             try {
                 val interp = Interpreter(this@ClickService)
@@ -228,6 +324,10 @@ class ClickService : AccessibilityService(), Env {
         Store.addLog(this, msg)
     }
 
+    override fun setShotRate(perSec: Int) {
+        shotIntervalMs = maxOf(350L, 1000L / perSec)
+    }
+
     override fun pixel(x: Int, y: Int): String {
         val b = screenshot()
         if (x < 0 || y < 0 || x >= b.width || y >= b.height) {
@@ -264,7 +364,7 @@ class ClickService : AccessibilityService(), Env {
     }
 
     private fun screenshot(): Bitmap {
-        val wait = 350 - (System.currentTimeMillis() - lastShotAt)
+        val wait = shotIntervalMs - (System.currentTimeMillis() - lastShotAt)
         if (wait > 0) Thread.sleep(wait)
         lastShotAt = System.currentTimeMillis()
         val latch = CountDownLatch(1)
