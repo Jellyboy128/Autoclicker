@@ -3,10 +3,14 @@ package com.example.autoclicker
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
+import android.os.Handler
+import android.os.Looper
+import android.view.Display
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -15,10 +19,12 @@ import android.view.accessibility.AccessibilityEvent
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
 
-class ClickService : AccessibilityService() {
+class ClickService : AccessibilityService(), Env {
 
     companion object {
         @Volatile
@@ -28,6 +34,7 @@ class ClickService : AccessibilityService() {
     private var windowManager: WindowManager? = null
     private var panel: View? = null
     private var worker: Thread? = null
+    private var lastShotAt = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -47,6 +54,15 @@ class ClickService : AccessibilityService() {
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    private fun report(msg: String) {
+        Store.addLog(this, msg)
+        Handler(Looper.getMainLooper()).post {
+            Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // ---- плавающая панель ----
 
     private fun makeButton(label: String, onClick: () -> Unit): Button {
         val b = Button(this)
@@ -145,21 +161,39 @@ class ClickService : AccessibilityService() {
         panel = null
     }
 
-    // ---- скрипт (пока демо: листаем экран вверх-вниз) ----
+    // ---- запуск скрипта ----
 
     fun startScript() {
         if (worker?.isAlive == true) return
+        val name = Store.active(this)
+        val text = Store.load(this, name)
+        if (name.isEmpty() || text.isBlank()) {
+            report("Нет активного скрипта: откройте приложение и сохраните скрипт")
+            return
+        }
+        val prog = try {
+            Parser(Lexer(text).lex()).parseProgram()
+        } catch (e: ScriptError) {
+            report("Ошибка, строка ${e.line}: ${e.message}")
+            return
+        }
+        val loopAll = Store.loop(this)
         val t = Thread {
             try {
-                val w = resources.displayMetrics.widthPixels.toFloat()
-                val h = resources.displayMetrics.heightPixels.toFloat()
-                while (!Thread.currentThread().isInterrupted) {
-                    swipe(w / 2, h * 0.7f, w / 2, h * 0.3f, 400)
-                    pause(800)
-                    swipe(w / 2, h * 0.3f, w / 2, h * 0.7f, 400)
-                    pause(800)
-                }
+                val interp = Interpreter(this@ClickService)
+                report("Старт: $name")
+                do {
+                    interp.runOnce(prog)
+                } while (loopAll)
+                report("Скрипт завершён")
+            } catch (e: StopSignal) {
+                report("Остановлено командой stop/break")
             } catch (e: InterruptedException) {
+                report("Остановлено кнопкой")
+            } catch (e: ScriptError) {
+                report("Ошибка, строка ${e.line}: ${e.message}")
+            } catch (e: Exception) {
+                report("Сбой: ${e.message}")
             }
         }
         worker = t
@@ -171,23 +205,86 @@ class ClickService : AccessibilityService() {
         worker = null
     }
 
-    // ---- базовые действия ----
+    // ---- действия для интерпретатора ----
 
-    private fun pause(ms: Long) {
-        Thread.sleep(ms)
-    }
-
-    private fun tap(x: Float, y: Float) {
+    override fun click(x: Int, y: Int) {
         val path = Path()
-        path.moveTo(x, y)
+        path.moveTo(x.toFloat(), y.toFloat())
         gesture(path, 50)
     }
 
-    private fun swipe(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long) {
+    override fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, ms: Long) {
         val path = Path()
-        path.moveTo(x1, y1)
-        path.lineTo(x2, y2)
-        gesture(path, durationMs)
+        path.moveTo(x1.toFloat(), y1.toFloat())
+        path.lineTo(x2.toFloat(), y2.toFloat())
+        gesture(path, ms)
+    }
+
+    override fun sleep(ms: Long) {
+        if (ms > 0) Thread.sleep(ms)
+    }
+
+    override fun log(msg: String) {
+        Store.addLog(this, msg)
+    }
+
+    override fun pixel(x: Int, y: Int): String {
+        val b = screenshot()
+        if (x < 0 || y < 0 || x >= b.width || y >= b.height) {
+            throw ScriptError(0, "pixel($x, $y): точка вне экрана ${b.width}x${b.height}")
+        }
+        return String.format("#%06X", b.getPixel(x, y) and 0xFFFFFF)
+    }
+
+    override fun find(color: String, x1: Int, y1: Int, x2: Int, y2: Int, tol: Int): IntArray? {
+        val target = Color.parseColor(color)
+        val b = screenshot()
+        val l = maxOf(0, minOf(x1, x2))
+        val t = maxOf(0, minOf(y1, y2))
+        val r = minOf(b.width - 1, maxOf(x1, x2))
+        val bt = minOf(b.height - 1, maxOf(y1, y2))
+        if (r < l || bt < t) return null
+        val w = r - l + 1
+        val h = bt - t + 1
+        val px = IntArray(w * h)
+        b.getPixels(px, 0, w, l, t, w, h)
+        val tr = Color.red(target)
+        val tg = Color.green(target)
+        val tb = Color.blue(target)
+        for (i in px.indices) {
+            val p = px[i]
+            if (abs(Color.red(p) - tr) <= tol &&
+                abs(Color.green(p) - tg) <= tol &&
+                abs(Color.blue(p) - tb) <= tol
+            ) {
+                return intArrayOf(l + i % w, t + i / w)
+            }
+        }
+        return null
+    }
+
+    private fun screenshot(): Bitmap {
+        val wait = 350 - (System.currentTimeMillis() - lastShotAt)
+        if (wait > 0) Thread.sleep(wait)
+        lastShotAt = System.currentTimeMillis()
+        val latch = CountDownLatch(1)
+        var result: Bitmap? = null
+        takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, object : TakeScreenshotCallback {
+            override fun onSuccess(screenshot: ScreenshotResult) {
+                val hb = screenshot.hardwareBuffer
+                val hw = Bitmap.wrapHardwareBuffer(hb, screenshot.colorSpace)
+                result = hw?.copy(Bitmap.Config.ARGB_8888, false)
+                hb.close()
+                latch.countDown()
+            }
+
+            override fun onFailure(errorCode: Int) {
+                latch.countDown()
+            }
+        })
+        latch.await(3, TimeUnit.SECONDS)
+        return result
+            ?: throw ScriptError(0, "Не удалось сделать скриншот (экран защищён или слишком частые запросы)")
     }
 
     private fun gesture(path: Path, durationMs: Long) {
