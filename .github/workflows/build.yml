@@ -14,6 +14,15 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.10.2
+      - uses: actions/cache@v4
+        with:
+          path: app/debug.p12
+          key: debug-keystore-v1
+      - name: Create keystore if missing
+        run: |
+          if [ ! -f app/debug.p12 ]; then
+            keytool -genkeypair -keystore app/debug.p12 -storetype PKCS12 -alias autoclicker -keyalg RSA -keysize 2048 -validity 36500 -storepass android -keypass android -dname "CN=Autoclicker"
+          fi
       - run: gradle assembleDebug
       - uses: actions/upload-artifact@v4
         with:
