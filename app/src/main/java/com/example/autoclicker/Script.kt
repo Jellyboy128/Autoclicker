@@ -11,7 +11,10 @@ interface Env {
     fun pixel(x: Int, y: Int): String
     fun find(color: String, x1: Int, y1: Int, x2: Int, y2: Int, tol: Int): IntArray?
     fun log(msg: String)
+    fun setShotRate(perSec: Int)
 }
+
+class Pt(val x: Int, val y: Int)
 
 enum class T { IDENT, NUM, STR, SYM, EOF }
 class Tok(val type: T, val text: String, val line: Int)
@@ -81,9 +84,12 @@ sealed class Stmt(val line: Int)
 class Call(line: Int, val name: String, val args: List<Expr>) : Stmt(line)
 class Repeat(line: Int, val count: Expr?, val body: List<Stmt>) : Stmt(line)
 class If(line: Int, val cond: Expr, val then: List<Stmt>, val els: List<Stmt>) : Stmt(line)
+class PointDef(line: Int, val name: String, val x: Expr, val y: Expr) : Stmt(line)
 
 class Parser(private val toks: List<Tok>) {
     private var p = 0
+    private var depth = 0
+    private var header = true
 
     private fun peek(): Tok = toks[p]
     private fun next(): Tok {
@@ -100,18 +106,24 @@ class Parser(private val toks: List<Tok>) {
 
     fun parseProgram(): List<Stmt> {
         val out = ArrayList<Stmt>()
-        while (peek().type != T.EOF) out.add(parseStmt())
+        while (peek().type != T.EOF) {
+            val s = parseStmt()
+            if (!(s is PointDef || (s is Call && s.name == "fps"))) header = false
+            out.add(s)
+        }
         return out
     }
 
     private fun parseBlock(): List<Stmt> {
         expectSym("{")
+        depth++
         val out = ArrayList<Stmt>()
         while (!isSym("}")) {
             if (peek().type == T.EOF) throw ScriptError(peek().line, "Не закрыта «{»")
             out.add(parseStmt())
         }
         expectSym("}")
+        depth--
         return out
     }
 
@@ -156,11 +168,29 @@ class Parser(private val toks: List<Tok>) {
                 }
                 If(t.line, c, th, el)
             }
+            "point" -> {
+                expectSym("(")
+                val nt = next()
+                if (nt.type != T.IDENT && nt.type != T.STR) {
+                    throw ScriptError(nt.line, "point: сначала имя точки, например point(кнопка, 540, 1200)")
+                }
+                expectSym(",")
+                val px = parseExpr()
+                expectSym(",")
+                val py = parseExpr()
+                expectSym(")")
+                if (isSym(";")) next()
+                PointDef(t.line, nt.text.lowercase(), px, py)
+            }
             else -> {
                 expectSym("(")
                 val args = parseArgs()
                 if (isSym(";")) next()
-                Call(t.line, t.text.lowercase(), args)
+                val name = t.text.lowercase()
+                if (name == "fps" && (depth > 0 || !header)) {
+                    throw ScriptError(t.line, "fps() должна стоять в самом начале скрипта")
+                }
+                Call(t.line, name, args)
             }
         }
     }
@@ -229,9 +259,11 @@ class Interpreter(private val env: Env) {
     private var loopDepth = 0
     private var foundX = -1
     private var foundY = -1
+    private val points = HashMap<String, Pt>()
 
     fun runOnce(prog: List<Stmt>) {
         loopDepth = 0
+        for (s in prog) if (s is PointDef) execOne(s)
         exec(prog)
     }
 
@@ -244,6 +276,9 @@ class Interpreter(private val env: Env) {
         try {
             when (s) {
                 is Call -> call(s)
+                is PointDef -> {
+                    points[s.name] = Pt(toInt(eval(s.x), s.line, "point"), toInt(eval(s.y), s.line, "point"))
+                }
                 is Repeat -> {
                     val cnt = s.count
                     val n: Int? = if (cnt == null) null else toInt(eval(cnt), s.line, "repeat")
@@ -271,8 +306,10 @@ class Interpreter(private val env: Env) {
         }
     }
 
+    private fun flat(v: Any): List<Any> = if (v is Pt) listOf(v.x, v.y) else listOf(v)
+
     private fun call(c: Call) {
-        val a = c.args.map { eval(it) }
+        val a = c.args.flatMap { flat(eval(it)) }
         fun n(i: Int) = toInt(a[i], c.line, c.name)
         fun need(k: Int) {
             if (a.size != k) throw ScriptError(c.line, "${c.name}() ожидает аргументов: $k")
@@ -282,22 +319,32 @@ class Interpreter(private val env: Env) {
             "sleep", "wait" -> { need(1); env.sleep(n(0).toLong()) }
             "swipe" -> { need(5); env.swipe(n(0), n(1), n(2), n(3), n(4).toLong()) }
             "log" -> { need(1); env.log(a[0].toString()) }
+            "fps" -> {
+                need(1)
+                if (n(0) < 1 || n(0) > 3) {
+                    throw ScriptError(c.line, "fps: допустимо от 1 до 3 (скриншотов в секунду)")
+                }
+                env.setShotRate(n(0))
+            }
             "stop" -> throw StopSignal()
             "break" -> throw (if (loopDepth > 0) BreakSignal() else StopSignal())
             else -> throw ScriptError(c.line, "Неизвестная команда: ${c.name}")
         }
     }
 
+    private fun lookup(e: Var): Any = points[e.name] ?: when (e.name) {
+        "found" -> Pt(foundX, foundY)
+        "foundx" -> foundX
+        "foundy" -> foundY
+        "true" -> true
+        "false" -> false
+        else -> throw ScriptError(e.line, "Неизвестное имя: ${e.name}")
+    }
+
     private fun eval(e: Expr): Any = when (e) {
         is Num -> e.v
         is Str -> e.s
-        is Var -> when (e.name) {
-            "foundx" -> foundX
-            "foundy" -> foundY
-            "true" -> true
-            "false" -> false
-            else -> throw ScriptError(e.line, "Неизвестное имя: ${e.name}")
-        }
+        is Var -> lookup(e)
         is Not -> !toBool(eval(e.e), e.line)
         is Bin -> when (e.op) {
             "&&" -> toBool(eval(e.l), e.line) && toBool(eval(e.r), e.line)
@@ -309,16 +356,16 @@ class Interpreter(private val env: Env) {
     }
 
     private fun func(f: Func): Any {
-        val a = f.args.map { eval(it) }
+        val a = f.args.flatMap { flat(eval(it)) }
         fun n(i: Int) = toInt(a[i], f.line, f.name)
         return when (f.name) {
             "pixel" -> {
-                if (a.size != 2) throw ScriptError(f.line, "pixel(x, y) ожидает 2 аргумента")
+                if (a.size != 2) throw ScriptError(f.line, "pixel(x, y) ожидает точку или 2 числа")
                 env.pixel(n(0), n(1))
             }
             "findcolor" -> {
                 if (a.size != 5 && a.size != 6) {
-                    throw ScriptError(f.line, "findColor(цвет, x1, y1, x2, y2, допуск) ожидает 5 или 6 аргументов")
+                    throw ScriptError(f.line, "findColor(цвет, угол1, угол2, допуск): нужно 5 или 6 значений")
                 }
                 val color = a[0] as? String
                     ?: throw ScriptError(f.line, "findColor: первый аргумент — цвет в кавычках, например \"#FF0000\"")
