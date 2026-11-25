@@ -85,6 +85,7 @@ repeat(forever) {
         title.textSize = 22f
         title.setTextColor(dark)
         root.addView(title)
+        root.addView(btn("? Справка и команды") { Help.show(this) })
 
         val loopSwitch = Switch(this)
         loopSwitch.text = "Зациклить весь скрипт"
