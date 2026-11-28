@@ -85,6 +85,7 @@ class Call(line: Int, val name: String, val args: List<Expr>) : Stmt(line)
 class Repeat(line: Int, val count: Expr?, val body: List<Stmt>) : Stmt(line)
 class If(line: Int, val cond: Expr, val then: List<Stmt>, val els: List<Stmt>) : Stmt(line)
 class PointDef(line: Int, val name: String, val x: Expr, val y: Expr) : Stmt(line)
+class ColorDef(line: Int, val name: String, val value: Expr) : Stmt(line)
 
 class Parser(private val toks: List<Tok>) {
     private var p = 0
@@ -108,7 +109,7 @@ class Parser(private val toks: List<Tok>) {
         val out = ArrayList<Stmt>()
         while (peek().type != T.EOF) {
             val s = parseStmt()
-            if (!(s is PointDef || (s is Call && s.name == "fps"))) header = false
+            if (!(s is PointDef || s is ColorDef || (s is Call && s.name == "fps"))) header = false
             out.add(s)
         }
         return out
@@ -181,6 +182,18 @@ class Parser(private val toks: List<Tok>) {
                 expectSym(")")
                 if (isSym(";")) next()
                 PointDef(t.line, nt.text.lowercase(), px, py)
+            }
+            "color" -> {
+                expectSym("(")
+                val cn = next()
+                if (cn.type != T.IDENT && cn.type != T.STR) {
+                    throw ScriptError(cn.line, "color: сначала имя цвета, например color(красный, \"#FF0000\")")
+                }
+                expectSym(",")
+                val cv = parseExpr()
+                expectSym(")")
+                if (isSym(";")) next()
+                ColorDef(t.line, cn.text.lowercase(), cv)
             }
             else -> {
                 expectSym("(")
@@ -261,10 +274,11 @@ class Interpreter(private val env: Env) {
     private var foundY = -1
     private var foundColor = ""
     private val points = HashMap<String, Pt>()
+    private val colors = HashMap<String, String>()
 
     fun runOnce(prog: List<Stmt>) {
         loopDepth = 0
-        for (s in prog) if (s is PointDef) execOne(s)
+        for (s in prog) if (s is PointDef || s is ColorDef) execOne(s)
         exec(prog)
     }
 
@@ -279,6 +293,13 @@ class Interpreter(private val env: Env) {
                 is Call -> call(s)
                 is PointDef -> {
                     points[s.name] = Pt(toInt(eval(s.x), s.line, "point"), toInt(eval(s.y), s.line, "point"))
+                }
+                is ColorDef -> {
+                    val cv = eval(s.value)
+                    if (cv !is String || !Regex("#[0-9a-fA-F]{6}").matches(cv)) {
+                        throw ScriptError(s.line, "color: нужен цвет вида \"#RRGGBB\"")
+                    }
+                    colors[s.name] = cv
                 }
                 is Repeat -> {
                     val cnt = s.count
@@ -333,7 +354,7 @@ class Interpreter(private val env: Env) {
         }
     }
 
-    private fun lookup(e: Var): Any = points[e.name] ?: when (e.name) {
+    private fun lookup(e: Var): Any = points[e.name] ?: colors[e.name] ?: when (e.name) {
         "found" -> Pt(foundX, foundY)
         "foundx" -> foundX
         "foundy" -> foundY
