@@ -336,7 +336,7 @@ class ClickService : AccessibilityService(), Env {
         return String.format("#%06X", b.getPixel(x, y) and 0xFFFFFF)
     }
 
-    override fun find(color: String, x1: Int, y1: Int, x2: Int, y2: Int, tol: Int): IntArray? {
+        fun findOld(color: String, x1: Int, y1: Int, x2: Int, y2: Int, tol: Int): IntArray? {
         val target = Color.parseColor(color)
         val b = screenshot()
         val l = maxOf(0, minOf(x1, x2))
@@ -363,6 +363,35 @@ class ClickService : AccessibilityService(), Env {
         return null
     }
 
+     override fun find(colors: List<String>, x1: Int, y1: Int, x2: Int, y2: Int, tol: Int): IntArray? {
+        val targets = colors.map { Color.parseColor(it) }
+        val b = screenshot()
+        val l = maxOf(0, minOf(x1, x2))
+        val t = maxOf(0, minOf(y1, y2))
+        val r = minOf(b.width - 1, maxOf(x1, x2))
+        val bt = minOf(b.height - 1, maxOf(y1, y2))
+        if (r < l || bt < t) return null
+        val w = r - l + 1
+        val h = bt - t + 1
+        val px = IntArray(w * h)
+        b.getPixels(px, 0, w, l, t, w, h)
+        for (ci in targets.indices) {
+            val tr = Color.red(targets[ci])
+            val tg = Color.green(targets[ci])
+            val tb = Color.blue(targets[ci])
+            for (i in px.indices) {
+                val p = px[i]
+                if (abs(Color.red(p) - tr) <= tol &&
+                    abs(Color.green(p) - tg) <= tol &&
+                    abs(Color.blue(p) - tb) <= tol
+                ) {
+                    return intArrayOf(l + i % w, t + i / w, ci)
+                }
+            }
+        }
+        return null
+    }
+    
     private fun screenshot(): Bitmap {
         val wait = shotIntervalMs - (System.currentTimeMillis() - lastShotAt)
         if (wait > 0) Thread.sleep(wait)
