@@ -19,18 +19,39 @@ import android.widget.LinearLayout
 
 private class Gutter(ctx: Context, private val ed: EditText) : View(ctx) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val d = ctx.resources.displayMetrics.density
+    private var digits = 1
 
     init {
         setBackgroundColor(Color.parseColor("#ECEFF1"))
     }
 
-    override fun onDraw(c: Canvas) {
-        val lay = ed.layout ?: return
+    fun refresh() {
+        val n = maxOf(1, ed.lineCount.toString().length)
+        if (n != digits) {
+            digits = n
+            requestLayout()
+        }
+        invalidate()
+    }
+
+    private fun setupPaint() {
         paint.textSize = ed.textSize
         paint.typeface = Typeface.MONOSPACE
+    }
+
+    override fun onMeasure(w: Int, h: Int) {
+        setupPaint()
+        val width = (paint.measureText("0") * digits + 10 * d).toInt()
+        setMeasuredDimension(width, getDefaultSize(suggestedMinimumHeight, h))
+    }
+
+    override fun onDraw(c: Canvas) {
+        val lay = ed.layout ?: return
+        setupPaint()
         paint.color = Color.parseColor("#78909C")
         paint.textAlign = Paint.Align.RIGHT
-        val x = width - 8 * resources.displayMetrics.density
+        val x = width - 4 * d
         for (i in 0 until lay.lineCount) {
             c.drawText((i + 1).toString(), x, ed.getLineBounds(i, null).toFloat(), paint)
         }
@@ -87,7 +108,10 @@ class CodeEditor(ctx: Context) {
         row.setBackgroundColor(Color.WHITE)
         row.addView(
             gutter,
-            LinearLayout.LayoutParams((44 * d).toInt(), LinearLayout.LayoutParams.MATCH_PARENT)
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.MATCH_PARENT
+            )
         )
         row.addView(
             hsv,
@@ -100,10 +124,10 @@ class CodeEditor(ctx: Context) {
             override fun onTextChanged(s: CharSequence?, st: Int, b: Int, c: Int) {}
             override fun afterTextChanged(e: Editable?) {
                 if (e != null) highlight(e)
-                gutter.invalidate()
+                gutter.refresh()
             }
         })
-        edit.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> gutter.invalidate() }
+        edit.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> gutter.refresh() }
     }
 
     private fun color(e: Editable, a: Int, b: Int, col: Int) {
