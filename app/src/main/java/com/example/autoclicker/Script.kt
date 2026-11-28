@@ -9,7 +9,7 @@ interface Env {
     fun swipe(x1: Int, y1: Int, x2: Int, y2: Int, ms: Long)
     fun sleep(ms: Long)
     fun pixel(x: Int, y: Int): String
-    fun find(color: String, x1: Int, y1: Int, x2: Int, y2: Int, tol: Int): IntArray?
+    fun find(colors: List<String>, x1: Int, y1: Int, x2: Int, y2: Int, tol: Int): IntArray?
     fun log(msg: String)
     fun setShotRate(perSec: Int)
 }
@@ -259,6 +259,7 @@ class Interpreter(private val env: Env) {
     private var loopDepth = 0
     private var foundX = -1
     private var foundY = -1
+    private var foundColor = ""
     private val points = HashMap<String, Pt>()
 
     fun runOnce(prog: List<Stmt>) {
@@ -336,6 +337,7 @@ class Interpreter(private val env: Env) {
         "found" -> Pt(foundX, foundY)
         "foundx" -> foundX
         "foundy" -> foundY
+        "foundcolor" -> foundColor
         "true" -> true
         "false" -> false
         else -> throw ScriptError(e.line, "Неизвестное имя: ${e.name}")
@@ -364,22 +366,28 @@ class Interpreter(private val env: Env) {
                 env.pixel(n(0), n(1))
             }
             "findcolor" -> {
-                if (a.size != 5 && a.size != 6) {
-                    throw ScriptError(f.line, "findColor(цвет, угол1, угол2, допуск): нужно 5 или 6 значений")
+                var ci = 0
+                while (ci < a.size && a[ci] is String) ci++
+                val rest = a.size - ci
+                if (ci == 0 || (rest != 4 && rest != 5)) {
+                    throw ScriptError(
+                        f.line,
+                        "findColor(цвет1, цвет2, ..., угол1, угол2, допуск): сначала цвета в кавычках, затем область и необязательный допуск"
+                    )
                 }
-                val color = a[0] as? String
-                    ?: throw ScriptError(f.line, "findColor: первый аргумент — цвет в кавычках, например \"#FF0000\"")
-                val tol = if (a.size == 6) n(5) else 10
+                val colors = a.subList(0, ci).map { it as String }
+                val tol = if (rest == 5) n(ci + 4) else 10
                 val r = try {
-                    env.find(color, n(1), n(2), n(3), n(4), tol)
+                    env.find(colors, n(ci), n(ci + 1), n(ci + 2), n(ci + 3), tol)
                 } catch (ex: IllegalArgumentException) {
-                    throw ScriptError(f.line, "Неверный цвет «$color», нужен вид \"#RRGGBB\"")
+                    throw ScriptError(f.line, "Неверный цвет в findColor, нужен вид \"#RRGGBB\"")
                 }
                 if (r == null) {
                     false
                 } else {
                     foundX = r[0]
                     foundY = r[1]
+                    foundColor = colors[r[2]]
                     true
                 }
             }
