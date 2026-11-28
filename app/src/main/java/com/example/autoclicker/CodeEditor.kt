@@ -69,7 +69,7 @@ class CodeEditor(ctx: Context) {
     private val cComment = Color.parseColor("#90A4AE")
     private val cSpecial = Color.parseColor("#C2185B")
 
-    private val keywords = setOf("if", "else", "repeat", "forever", "point")
+    private val keywords = setOf("if", "else", "repeat", "forever", "point", "color")
     private val commands = setOf(
         "click", "tap", "sleep", "wait", "swipe", "log", "stop", "break", "fps", "pixel", "findcolor"
     )
