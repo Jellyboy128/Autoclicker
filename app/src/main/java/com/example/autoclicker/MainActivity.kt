@@ -6,8 +6,6 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
 import android.provider.Settings
-import android.text.InputType
-import android.view.Gravity
 import android.view.View
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
@@ -117,18 +115,10 @@ repeat(forever) {
         root.addView(nameEdit)
 
         root.addView(label("Скрипт"))
-        scriptEdit = EditText(this)
-        scriptEdit.inputType = InputType.TYPE_CLASS_TEXT or
-            InputType.TYPE_TEXT_FLAG_MULTI_LINE or
-            InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-        scriptEdit.typeface = Typeface.MONOSPACE
-        scriptEdit.gravity = Gravity.TOP or Gravity.START
-        scriptEdit.minLines = 10
-        scriptEdit.setTextColor(dark)
-        scriptEdit.setBackgroundColor(Color.WHITE)
-        scriptEdit.setPadding(dp(10), dp(10), dp(10), dp(10))
+        val editor = CodeEditor(this)
+        scriptEdit = editor.edit
         scriptEdit.setText(sample)
-        root.addView(scriptEdit)
+        root.addView(editor.view)
 
         root.addView(row(
             btn("Сохранить") { save() },
